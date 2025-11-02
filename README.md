@@ -9,3 +9,5 @@ Raw data and files can be found at INSERTLINKHERE
   * Margaritifera_hembeli_Genome_Assembly_Annotation_Command_Line.txt
   * Illumina_Read_Cleaning_FASTP.sh
   * Repeat_Masking_with_RepeatModeler_and_RepeatMasker.sh
+  * GoEnrichment_Graphing.R
+  * Kegg_Graphing.R
