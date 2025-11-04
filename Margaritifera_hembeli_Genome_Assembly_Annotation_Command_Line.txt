@@ -1,0 +1,448 @@
+# Bash Command List
+
+#############################################
+
+# Illumina Genomic and RNA-seq Short-Read Sequences were Cleaned and Filtered using the Illumina_Read_Cleaning_FASTP.sh Script.
+
+#############################################
+
+# Genome Size and Heterozygosity Estimation with KmerGenie, Jellyfish, and the online program GenomeScope2 using the FASTP Cleaned Illumina DNA Reads
+
+## KmerGenie to Determine the Best Predicted KmerGenie
+## Create a file with a list of Illumina Short-Read File Names
+
+ls -1 *.fastp.fastq > Kmergenie_list_files
+
+kmergenie list_files -k 129
+
+### Best Predicted Kmer is 121
+
+## Jellyfish to Produce Kmer Frequencies for the Best Predicted Kmer
+
+jellyfish count -m 121 -s 100M -t 24 -C <(zcat Mhem-gen-1-4C_R1_001.fastp.fastq.gz) <(zcat Mhem-gen-1-4C_R2_001.fastp.fastq.gz)
+
+jellyfish histo -t 24 mer_counts.jf > Mhem_IlluminaReads_k121.histo
+
+## GenomeScope2 Online Settings
+
+Upload Mhem_IlluminaReads_k121.histo File
+Description: Marg_hem_k121
+K-mer Length: 121
+Max Kmer Coverage: 10000
+
+#############################################
+
+# Genome Assembly in Hifiasm + Scaffolding w Bionano then Polishing in Pilon
+
+## Draft Genome Assembly with Hifiasm
+
+hifiasm -o M_hembeli_Hifiasm_Assemlby.asm -t 32 M-hembeli-pacBio_b.fastq.gz M-hembeli-pacBio_c.fastq.gz M-hembeli-pacBio_d.fastq.gz M-hembeli-pacBio_e.fastq.gz
+
+### Convert to Fasta File for BUSCO + QUAST
+awk '/^S/{print ">"$2;print $3}' M_hembeli_Hifiasm_Assembly.asm.bp.p_ctg.gfa > M_hembeli_Hifiasm_Assembly.asm.bp.p_ctg.gfa.fa
+
+## Hifiasm Assembly was Scaffolded with One Lane of Bionano at Bionano
+
+## Polishing Bionano Assembly with Pilon + Bowtie2 + Samtools
+
+### Start with Building a Bowtie2 Library
+bowtie2-build Mhem_Bionano_Scaff.fasta Mhem_Bionano_Pilon1
+
+### Run Bowtie2 with Illumina Reads
+bowtie2 -x Mhem_Bionano_Pilon1 -1 Mhem-gen-1-4C_R1_001.fastp.fastq.gz -2 Mhem-gen-1-4C_R2_001.fastp.fastq.gz -S M_hembeli_Bionano_Bowtie2_Pilon1.sam --threads 16
+
+### Convert the Bowtie2 sam file to a bam file for Pilon.
+samtools view -S -b M_hembeli_Bionano_Bowtie2_Pilon1.sam > M_hembeli_Bionano_Bowtie2_Pilon1.bam; samtools sort M_hembeli_Bionano_Bowtie2_Pilon1.bam -o M_hembeli_Bionano_Bowtie2_Pilon1.sorted.bam; samtools index M_hembeli_Bionano_Bowtie2_Pilon1.sorted.bam
+
+### Run Pilon to Correct Illumina Read Alignment
+java -Xms100g -Xmx350g -jar /home/sad0046/miniconda3/envs/pilon/bin/pilon --genome Mhem_Bionano_Scaff.fasta --bam M_hembeli_Bionano_Bowtie2_Pilon1.sorted.bam --output Mhem_Bionano_Pilon_Round1 --changes --diploid --verbose
+
+#### Repeat Polishing Steps with the Output of the First Pilon Run as the Input for the Second Round
+
+## Example Code for Assessing Quality with QUAST
+
+python3 quast.py -o Mhem_Polished_Scaff_Quast --threads 16 --large --min-contig 10000 Mhem_Polished_Scaff.fasta
+
+## Example Code for Assessing Completeness with BUSCO + Metazoa_ODB10 in Singularity
+
+singularity exec busco_v5.7.1_cv1.sif busco -i Mhem_Polished_Scaff.fasta -l metazoa_odb10 -m geno
+
+#############################################
+
+# Contamination was Evaluated with Blobtools
+# Input Files: Polished Fasta File: Mhem_Polished_Scaff.fasta
+# Input Files: Coverage File: Mhem_Polished_Scaff.sorted.bam
+# Input Files: Hits File: Mhem_Polished_Scaff.hits.out
+
+## Create a Coverage File using Bowtie2 + Samtools
+
+### Start with Building a Bowtie2 Library
+bowtie2-build Mhem_Polished_Scaff.fasta Mhem_Polished_Scaff
+
+### Run Bowtie2 with Illumina Reads
+bowtie2 -x Mhem_Polished_Scaff -1 Mhem-gen-1-4C_R1_001.fastp.fastq.gz -2 Mhem-gen-1-4C_R2_001.fastp.fastq.gz -S Mhem_Polished_Scaff.sam --threads 16
+
+### Convert the Bowtie2 sam file to a bam file for Pilon.
+samtools view -S -b Mhem_Polished_Scaff.sam > Mhem_Polished_Scaff.bam
+
+samtools sort Mhem_Polished_Scaff.bam -o Mhem_Polished_Scaff.sorted.bam
+
+samtools index Mhem_Polished_Scaff.sorted.bam
+
+## Create a Blast Hits File using BLASTN
+
+ blastn -task megablast -query Mhem_Polished_Scaff.fasta -db nt -outfmt '6 qseqid staxids bitscore std' -max_target_seqs 1 -max_hsps 1 -evalue 1e-25 -out Mhem_Polished_Scaff.hits.out -num_threads 32
+ 
+## Run Blobtools
+ 
+ blobtools create -i Mhem_Polished_Scaff.fasta -b Mhem_Polished_Scaff.sorted.bam -t Mhem_Polished_Scaff.hits.out -o Mhem_Polished_Scaff_Blobplot
+ 
+ blobtools view -i Mhem_Polished_Scaff_Blobplot.blobDB.json
+ 
+ blobtools plot -i Mhem_Polished_Scaff_Blobplot.blobDB.json
+ 
+## Scaffolds with < 10 Illumina Reads, Not Annotated as Metazoa, or had clear outliers (GC < 0.30 or >0.55) were Removed from the Stats File.
+## Remaining Contigs were Selected for in the Original Mhem_Bionano_Scaff.fasta using Seqkit
+
+seqkit grep -f NonContaminated_Contig_Names.txt Mhem_Polished_Scaff.fasta -o MargHem_1.0.5.fasta
+
+#############################################
+
+# Visualization of Genome Assembly and Statistics using Blobtoolkit
+## Inputs: Final Reference Assembly + Results of BUSCO
+
+blobtools create --fasta MargHem_1.0.5.fasta SnailPlot
+blobtools add --busco full_table.tsv SnailPlot/
+blobtools view --plot --view snail SnailPlot/
+
+#############################################
+
+# KAT Analysis - Comparing the PacBio Hifi Reads to the Final Genome Assembly
+## Unzip and concatenate the PacBio fastq.gz files for KAT Analysis (e.g. PacBio_Reads.fq)
+
+kat comp -t 32 -o PacBio_vs_MarHem_Assembly PacBio_Reads.fq Mhem_Polished_Scaff.fasta
+
+#############################################
+
+# Read Back Mapping of Genome Illumina Paired-End Short-eads using Bowtie2
+
+## Start with Building a Bowtie2 Library
+bowtie2-build Mhem_Polished_Scaff.fasta Mhem_Polished_Scaff
+
+## Run Bowtie2 with Illumina Reads
+bowtie2 -x Mhem_Polished_Scaff -1 Mhem-gen-1-4C_R1_001.fastp.fastq.gz -2 Mhem-gen-1-4C_R2_001.fastp.fastq.gz -S Mhem_Polished_Scaff.sam --threads 16
+
+## Convert the Bowtie2 sam file to a bam file for Pilon.
+samtools view -S -b Mhem_Polished_Scaff.sam > Mhem_Polished_Scaff.bam
+
+samtools sort Mhem_Polished_Scaff.bam -o Mhem_Polished_Scaff.sorted.bam
+
+samtools index Mhem_Polished_Scaff.sorted.bam
+
+## Get Stats for Mapped File
+
+samtools flagstat file.bam
+
+#############################################
+
+# Read Back Mapping of Genomic PacBio Hifi Long-reads using Minimap2
+
+## Start with Building a Minimap2 Library
+minimap2 -d Mhem_Polished_Scaff.mmi Mhem_Polished_Scaff.fasta 
+
+## Run Minimap2 with PacBio Hifi Long-reads
+minimap2 -ax map-hifi Mhem_Polished_Scaff.mmi PacBio_Reads.fq > Mhem_Polished_Scaff_PacBio.sam
+
+## Convert Files using the Above Samtools and Generate Stats
+
+#############################################
+
+# Transcriptome Assembly
+
+## Individual Transcriptomes were de novo Assembled with Cleaned RNA-seq Reads and Trinity
+## Example Command:
+
+singularity exec trinityrnaseq.v2.14.0.simg Trinity --seqType fq --max_memory 50G --left Mhem-gen1-7C_R1_001.fastp.fastq.gz --right Mhem-gen1-7C_R2_001.fastp.fastq.gz --CPU 6 --SS_lib_type RF --full_cleanup
+
+### Final Transcriptomes were Renamed (e.g. MargHem_Transcriptome_1C_Mantle.fasta)
+
+## Cleaned RNA-seq Reads were Mapped to the Final Genome Assembly using Kallisto
+
+kallisto index -i Marhem MargHem_1.0.5.fasta
+kallisto quant -i Marhem.idx -o 1C_Mantle Mhem-gen1-1C_R1_001.fastp.fastq.gz Mhem-gen1-1C_R2_001.fastp.fastq.gz
+
+#############################################
+
+# Genome Annotation using RepeatModeler + RepeatMasker + Funannotate Pipeline
+
+# Repeat Masking Commands are in Repeat_Masking.sh Script.
+
+# Funannotate Commands
+
+## Input Files: Softmasked Genome Assembly MargHem_1.0.5.softmasked.fasta
+## Input Fules: Unzipped Cleaned RNA-Seq Files. Example: Mhem-gen1-1C_R2_001.fastp.fastq
+
+### Funannotate Recommends Removing the Mitogenome Contig for Nuclear Genome Annotation
+### Removed Contig Marhem_1004 = MargHem_1.0.5.softmasked.noMito.fasta
+
+
+## Train RNA-Seq Data for Ab Initio Predictions using Hisat2 + Trinity + PASA
+## Increased max intron length to 100,000
+
+singularity run funannotate_latest.sif funannotate train -i MargHem_1.0.5.softmasked.noMito.fasta -o Train_Funannotate_NoMito --left Mhem-gen1-1C_R1_fastp.fastq Mhem-gen1-5C_R1_fastp.fastq Mhem-gen1-7C_R1_fastp.fastq --right Mhem-gen1-1C_R2_fastp.fastq Mhem-gen1-5C_R2_fastp.fastq Mhem-gen1-7C_R2_fastp.fastq --stranded RF --species "Margaritifera hembeli" --no-trimmomatic --cpus 24 --max_intronlen 100000
+
+## Ab Initio Predictions using Augustus + GeneMark
+## Organism is set to Other since this is not a Fungual Genome
+## Name is Prefix given by NCBI Genome Submission Process
+## Busco_db_metazoa is to remove Fungal defaults for BUSCO
+## Weights removes the snap and glimmerhmm analyses
+
+singularity run ~/Programs/funannotate_latest.sif funannotate predict -i MargHem_1.0.5.softmasked.noMito.fasta -o Train_Funannotate_NoMito -s "Margaritifera hembeli" --cpus 24 --organism other --name ACIPPB --max_intronlen 100000 --busco_db metazoa --weights snap:0 glimmerhmm:0
+
+## Refine UTRs and Gene Model Predictions with PASA Models
+singularity run funannotate_latest.sif funannotate update -i Train_Funannotate_NoMito/ --cpus 24
+
+## Functional Annotation
+
+## Run Interproscan and eggNOG-mapper Seperately to Speed Up Analyses
+
+## Input Files: Predicted Proteins from Funannotate Margaritifera_hembeli.proteins.fa
+
+singularity exec -B ~/Programs/my_interproscan/interproscan-5.69-101.0/data -B $PWD/output:/output -B $PWD/temp:/temp -B $PWD:/input ~/Programs/interproscan_latest.sif ~/Programs/my_interproscan/interproscan-5.69-101.0/interproscan.sh --input Margaritifera_hembeli.proteins.fa --disable-precalc --output-dir /output --tempdir /temp --cpu 16 –goterms
+
+emapper.py --cpu 20 --override -m diamond --dmnd_ignore_warnings -i Margaritifera_hembeli.proteins.fa --evalue 0.001 --score 60 --pident 40 --query_cover 20 --subject_cover 20 --itype proteins --tax_scope auto --target_orthologs all --go_evidence non-electronic --pfam_realign none --report_orthologs --decorate_gff yes --excel -o Margaritifera_hembeli
+
+## Input Files: Interproscan and eggNOG-mapper Files + Fasta File with Mitogenome Marghem_1004_mtDNA.fasta
+
+singularity run funannotate_latest.sif funannotate annotate -i Train_Funannotate_NoMito/ --cpus 24 -s "Margaritifera hembeli" --iprscan Margaritifera_hembeli.proteins.fa.xml --eggnog Margaritifera_hembeli_out.emapper.annotations --busco_db metazoa --mito-pass-thru MargHem_1.0.5_1004_mtDNA.fasta
+
+#############################################
+
+# KEGG Annotations - Online Web Server
+
+## KEGG Annotations were annotated for the predicted proteins using the GHOSTX program in the online Kaas pipeline. See Website: https://www.genome.jp/tools/kaas/
+## Select the KAAS job request (BBH method) if genome assembly is complete or a draft. For partial genomes use the (SBH method).
+## Select the GHOSTX (amino acid query only) Option
+## Load in predicted proteins as a fasta file (MargHem_1.0.5.PredictedProteins.fasta)
+## Set the GENES data set to the Five Available Molluscan Species (Lottia gigantea, Pomacea canaliculata, Ma. gigas, Mizuhopecten yessoensis, and Octopus bimaculoides)
+## Select the BBH method.
+
+## Graphing for KEGG is Outlined in Kegg_Graphing.R on GitHub
+
+#############################################
+
+# Mitogenome Identification with MitoHifi Pipeline
+
+## Input Files: Final Assembly MargHem_1.0.5.fasta
+## Input Files: Reference Mitogenome (NCBI Reference NC_079690.1)
+
+MitoHiFi -c MargHem_1.0.5.fasta -f NC_079690.1.fasta -g NC_072273.1.gbk -o 5 -t 32
+
+#############################################
+
+# Shared GO Terms using the OrthoFinder Algorithm in OrthoVenn3 - Online Web Server
+
+## Terms were inferred among Margaritifera hembeli and Margaritifera margaritifera, Potamilus streckersoni, Megalonaias nervosa, and Unio pictorum using default settings.
+
+## Graphing for GO Enrichment is Outlined in GoEnrichment_Graphing.R on GitHub
+
+#############################################
+
+# TBLASTN for Homeobox Genes
+
+## Create a Database of M. hembeli Scaffolds
+
+makeblastdb -in MargHem_1.0.5.fasta -dbtype nucl
+
+## Query Bivalve Hox Genes
+
+tblastn -query Bivalvia_Hox_Proteins.fasta -db MargHem_1.0.5.fasta -max_target_seqs 1 -outfmt 6 -evalue 1e-8 -num_threads 16 -out Mhem_Hox_Genes.blast_results
+
+#############################################
+
+# Orthofinder for Biomineralization Genes
+## Input Folder of Genomes in Fasta File.
+## Example: Biomineral_Bivalve_Transcripts/
+|_ C_virginica_3_protein.faa
+|__ L_gigantea_protein.faa
+|___ M_arenaria_protein.faa
+|____ M_edulis_protein.faa
+|_____ M_gigas_protein.faa
+|_______MargHem_1.0.5.PredictedProteins.faa
+|________ M_yessoensis_protein.faa
+|_________ P_maximus_protein.faa
+
+
+orthofinder -t 20 -I 2.1 -M msa -T fasttree -f Biomineral_Bivalve_Transcripts/ -o Biomineral_OrthoFinder_Results
+
+## Orthofinder Cleanup in /Biomineral_OrthoFinder_Results/Orthogroup_Sequences
+
+### Keep Sequences with a Minimum of 100 Amino Acids
+MIN_SEQUENCE_LENGTH=100
+# Delete sequences shorter than $MIN_SEQUENCE_LENGTH AAs
+echo "Deleting sequences shorter than 100 AAs..."
+for FILENAME in *.fa
+do
+grep -B 1 "[^>].\{$MIN_SEQUENCE_LENGTH,\}" $FILENAME > $FILENAME.out
+sed -i 's/--//g' $FILENAME.out
+sed -i '/^$/d' $FILENAME.out
+rm -rf $FILENAME
+mv $FILENAME.out $FILENAME
+done
+echo Done
+
+### Keep Orthogroups with a Minimum of 5 Taxa
+MIN_TAXA=5
+#If fewer than $MIN_TAXA different species are represented in the file, move that file to a "rejected_few_taxa" directory.
+echo "Removing groups with fewer than $MIN_TAXA taxa..."
+mkdir -p rejected_few_taxa_1
+for FILENAME in *.fa
+do
+awk -F "_" '/^>/{ taxon[$1]++ } END {for(o in taxon){print o,taxon[o]}}' $FILENAME > $FILENAME\.taxon_count #Creates temporary file with taxon abbreviation and number of sequences for that taxon in $FILENAME
+taxon_count=`grep -v 0 $FILENAME\.taxon_count | wc -l` #Counts the number of lines with an integer >0 (= the number of taxa with at least 1 sequence)
+if [ "$taxon_count" -lt "$MIN_TAXA" ] 
+then
+echo $FILENAME
+mv $FILENAME ./rejected_few_taxa_1/
+fi
+done
+rm -rf *.fa.taxon_count
+echo Done
+
+### Remove Sequences Identical to Longer Sequences within an Orthogroup
+CORES=24
+#Remove redundant sequences using uniqHaplo (http://doi.org/10.5281/zenodo.166024)
+mkdir preUniqHaplo
+cp *.fa preUniqHaplo
+echo "Removing redundant sequences using uniqHaplo..."
+ls *[0-9].fa | parallel -j $CORES 'perl ~/Scripts/uniqHaplo.pl -a {} > {}.uniq'
+rm -rf *.fa
+rename uniq uniq.fa *.fa.uniq
+echo Done
+
+### Align Sequences within an Orthogroup using Mafft
+#Align the remaining sequences using Mafft.
+echo "Aligning sequences using Mafft (auto)..."
+mkdir backup_alignments
+ls *[0-9].fa | parallel -j $CORES 'mafft --auto --localpair --maxiterate 1000 {} > {}.aln'
+rm -rf *[0-9].fa
+rename 's/.fa.aln/.fa/g' *.fa.aln
+cp *.fa ./backup_alignments/
+echo Done
+
+### Unwrap Aligned Fasta Files and Remove Introduced New Lines
+#Remove newlines.
+echo "Removing linebreaks in sequences..."
+for FILENAME in *.fa
+do
+sed -i ':a; $!N; /^>/!s/\n\([^>]\)/\1/; ta; P; D' $FILENAME
+done
+echo Done
+
+### Clean Alignments with Hmmcleaner 
+#Clean alignments with HmmCleaner
+echo "Removing misaligned sequence regions with HmmCleaner..."
+mkdir HmmCleaner_files
+CORES=24
+ls *.fa | parallel -j $CORES 'HmmCleaner.pl {} --specificity'
+mv *.fa ./HmmCleaner_files
+mv *.log ./HmmCleaner_files
+mv *.score ./HmmCleaner_files
+rename fasta fa *_hmm.fasta
+echo Done
+
+### Unwrap Aligned Fasta Files and Remove Introduced New Lines
+#Remove newlines.
+echo "Removing linebreaks in sequences..."
+for FILENAME in *.fa
+do
+sed -i ':a; $!N; /^>/!s/\n\([^>]\)/\1/; ta; P; D' $FILENAME
+done
+echo Done
+
+### Remove Non-Overlapping Sequences using AlignmentCompare (https://github.com/kmkocot/basal_metazoan_phylogenomics_scripts_01-2015)
+#Remove any sequences that don't overlap with all other sequences by at least 20 amino acids.
+for FILENAME in *.fa
+do
+java AlignmentCompare.java $FILENAME
+done
+echo Done
+echo
+rm -rf myTempFile.txt
+
+### Keep Orthogroups with a Minimum of 5 Taxa
+#If fewer than $MIN_TAXA different species are represented in the file, move that file to the "rejected_few_taxa" directory.
+MIN_TAXA=5
+echo "Removing groups with fewer than $MIN_TAXA taxa..."
+mkdir -p rejected_few_taxa_2
+for FILENAME in *.fa
+do
+awk -F "_" '/^>/{ taxon[$1]++ } END {for(o in taxon){print o,taxon[o]}}' $FILENAME > $FILENAME\.taxon_count #Creates temporary file with taxon abbreviation and number of sequences for that taxon in $FILENAME
+taxon_count=`grep -v 0 $FILENAME\.taxon_count | wc -l` #Counts the number of lines with an integer >0 (= the number of taxa with at least 1 sequence)
+if [ "$taxon_count" -lt "$MIN_TAXA" ] 
+then
+echo $FILENAME
+mv $FILENAME ./rejected_few_taxa_2/
+fi
+done
+rm -rf *.fa.taxon_count
+echo Done
+
+## BLASTP for Biomineralization Genes using Modified Biomineralization Toolbox
+
+### Create a Database of Biomineralization Toolbox 
+
+makeblastdb -in SMP_Biomineralization_Genes_July2025.fasta -dbtype prot
+
+### Run BLASTP Search on Each Remaining Orthogroup
+
+for i in *.fa; do blastp -query $i -db SMP_Biomineralization_Genes_July2025.fasta -max_target_seqs 3 -outfmt 6 -evalue 1e-8 -num_threads 16 -out $i.SMP_Biomineral_3Results.blast_results; done
+
+#### Combine BLASTP Results, Add Orthogroup IDs to Each Results, and Add Biomineral Names
+
+cat *.blast_results > MargHem_SMP_Biomineral.blast_results
+
+awk '{print $1}' MargHem_SMP_Biomineral.blast_results > Biomineral_Sequence_IDS.txt
+
+for i in $(cat Biomineral_Protein_IDS.txt); do grep $i Orthogroups.txt >> Biomineral_Orthogroup_IDS.txt; done
+
+for i in $(cat Biomineral_Protein_IDS.txt); do grep $i SMP_Biomineralization_Genes_July2025.csv #Table S1 in Supplement# >> Biomineral_Protein_IDS.txt; done
+
+#### I manually combine the three files (Biomineral_Orthogroup_IDS.txt, MargHem_SMP_Biomineral.blast_results, and Biomineral_Protein_IDS.txt) in Excel.
+#### Also as you do no reorder anything, each row in the Orthogroup IDS and the Protein IDS correspond with a BLASTp result.
+
+
+#############################################
+
+# Biomineralization Gene Family Contraction and Expansion - Cafe5
+## Input: Gene Counts for Identified Biomineral GENES + Ultrametric Newick Tree of Species
+
+## Use a For Loop to Grep Out Orthogroup Counts from Orthovenn Gene Count File for Cafe5
+
+## Input Files: List of Biomineral Orthogroup Names Biomineral_Orthogroup_Names.txt
+## Input Files: Orthofinder Gene Count File Bivalve_Orthogroup_Gene_Counts.tsv
+
+### Create an Empty File
+touch Biomineral_GeneCounts.csv
+
+### Run For Loop with Grep
+for i in $(cat Biomineral_Orthogroup_Names.txt)
+do
+grep $i Bivalve_Orthogroup_Gene_Counts.csv >> Biomineral_GeneCounts.csv
+done
+
+### Convert Orthofinder Species Newick Tree to Ultrametric for Cafe5
+
+python prep_r8s.py -i Bivalve_SpeciesTree_Orthofinder.txt -o Bivalve_SpeciesTree_Ultrametric_Tree.txt -s 37481 -p 'L_gigantea' -c '536'
+
+### Cafe5
+
+#### Make Folders for Each Gamma Category
+#### Run for loop to have replicates for each gamma category.
+
+#### Example for Gamma of 1 (e.g. -k 1)
+for i in {1..50}; do mkdir run$i; cafe5 -i ../Z_SMP_Biomineral_Orthogroup_GeneCounts.txt -t ../SpeciesTree_rooted.txt -k 1 -p -o run$i; done
+
+#### There is some variation between log likelihoods (1559.27 vs 1559.28 vs 1559.37), but the number of expanded and contracted families and which ones are significant does not change within a gamma category.
+
+#### Plot out the likelihood values for each gamma category and select the one with the smallest value.
